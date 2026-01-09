@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1020" />
+  <title>Thread Sense</title>
+  <link rel="manifest" href="manifest.json" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin:0; height:100%; background:#0b1020; overflow:hidden; touch-action:manipulation; }
+    canvas { width:100vw; height:100vh; display:block; }
+    .hud{
+      position:fixed; inset:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color:#eaf0ff; pointer-events:none;
+    }
+    .top{
+      position:absolute; top: env(safe-area-inset-top, 0px); left:0; right:0;
+      display:flex; justify-content:space-between; gap:10px; padding:14px 16px;
+      text-shadow: 0 1px 0 rgba(0,0,0,.35);
+      font-weight:700;
+    }
+    .pill{
+      background: rgba(255,255,255,.08);
+      border: 1px solid rgba(255,255,255,.12);
+      padding:8px 10px; border-radius:999px;
+      backdrop-filter: blur(8px);
+      display:flex; gap:8px; align-items:center;
+      max-width: 48vw;
+      overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+    }
+    .center{
+      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      padding:24px; text-align:center;
+    }
+    .card{
+      pointer-events:auto;
+      max-width: 640px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 16px;
+      padding: 16px 16px 14px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    .title{ font-size: 22px; margin:0 0 8px; }
+    .muted{ opacity:.86; line-height:1.35; margin:0 0 12px; }
+    .row{ display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+    button{
+      appearance:none; border:0;
+      padding:12px 14px; border-radius:12px;
+      font-weight:800; cursor:pointer;
+    }
+    button.primary{
+      background:#2d6cff; color:white;
+      box-shadow: 0 10px 20px rgba(45,108,255,.25);
+    }
+    button.good{ background:#20c997; color:#081018; }
+    button.bad{ background:#ff4d6d; color:#081018; }
+    button.secondary{
+      background: rgba(255,255,255,.10);
+      border: 1px solid rgba(255,255,255,.14);
+      color:#eaf0ff;
+    }
+    #installBtn{ display:none; }
+    .hint{ font-size:12px; opacity:.78; margin-top:10px; }
+
+    /* bottom answer bar */
+    .answers{
+      position:absolute; left:0; right:0; bottom: env(safe-area-inset-bottom, 0px);
+      padding: 12px 14px 14px;
+      display:flex; gap:12px; justify-content:center;
+      pointer-events:auto;
+    }
+    .answers button{ min-width: 140px; }
+    .toast{
+      position:absolute; left:50%; transform:translateX(-50%);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);
+      background: rgba(0,0,0,.55);
+      border: 1px solid rgba(255,255,255,.14);
+      padding: 10px 12px;
+      border-radius: 14px;
+      font-weight: 700;
+      opacity:0; transition:opacity .18s ease;
+      pointer-events:none;
+    }
+    .toast.show{ opacity:1; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div class="hud">
+    <div class="top">
+      <div class="pill">Score: <span id="score">0</span> · Streak: <span id="streak">0</span></div>
+      <div class="pill">Best streak: <span id="best">0</span></div>
+    </div>
+
+    <div class="center" id="menu">
+      <div class="card">
+        <h1 class="title">Thread Sense</h1>
+        <p class="muted">
+          Train your brain for <b>real-world spanner/ratchet direction</b>.<br>
+          You’ll see a bolt and a wrench handle from different orientations.<br><br>
+          Tap <b>PUSH</b> or <b>PULL</b (from your point of view on the handle) to
+          <b><span id="goalText">LOOSEN</span></b> it.
+        </p>
+        <div class="row">
+          <button id="startBtn" class="primary">Start</button>
+          <button id="installBtn" class="secondary">Install to Home Screen</button>
+          <button id="modeBtn" class="secondary">Goal: Loosen</button>
+        </div>
+        <div class="hint" id="installHint">iPhone/iPad: Share → Add to Home Screen</div>
+        <div class="hint" style="opacity:.7">
+          Default assumes <b>right-hand threads</b> (normal). Occasionally it will throw in <b>left-hand</b> too.
+        </div>
+      </div>
+    </div>
+
+    <div class="answers" id="answers" style="display:none">
+      <button id="pushBtn" class="secondary">PUSH</button>
+      <button id="pullBtn" class="secondary">PULL</button>
+    </div>
+
+    <div class="toast" id="toast">Nice</div>
+  </div>
+
+<script>
+(() => {
+  // --- PWA install prompt (Android/Chromium) ---
+  let deferredPrompt = null;
+  const installBtn = document.getElementById('installBtn');
+  const installHint = document.getElementById('installHint');
+
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    installBtn.style.display = 'inline-block';
+    installHint.style.display = 'none';
+  });
+  installBtn.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    installBtn.style.display = 'none';
+  });
+
+  // --- Register SW for offline ---
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+  }
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha:false });
+
+  const menu = document.getElementById('menu');
+  const answers = document.getElementById('answers');
+  const startBtn = document.getElementById('startBtn');
+  const pushBtn = document.getElementById('pushBtn');
+  const pullBtn = document.getElementById('pullBtn');
+  const modeBtn = document.getElementById('modeBtn');
+
+  const scoreEl = document.getElementById('score');
+  const streakEl = document.getElementById('streak');
+  const bestEl = document.getElementById('best');
+  const toast = document.getElementById('toast');
+  const goalText = document.getElementById('goalText');
+
+  const state = {
+    running:false,
+    t:0,
+    w:0,h:0,dpr:1,
+    score:0,
+    streak:0,
+    best: Number(localStorage.getItem('thread_sense_best') || 0),
+    // "goal" = what user is asked to do
+    goal: 'loosen', // or 'tighten'
+    // current question:
+    // bolt at screen center, handle extends outward at angle
+    handleAngle: 0,     // radians (direction from bolt center to handle end)
+    thread: 'RH',       // RH or LH
+    // derived:
+    correct: null,      // "push" or "pull"
+    lastResult: null,   // true/false
+  };
+  bestEl.textContent = state.best;
+
+  function resize(){
+    state.dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    state.w = Math.floor(window.innerWidth  * state.dpr);
+    state.h = Math.floor(window.innerHeight * state.dpr);
+    canvas.width = state.w;
+    canvas.height = state.h;
+  }
+  window.addEventListener('resize', resize, { passive:true });
+  resize();
+
+  // Prevent double-tap zoom
+  let lastTap = 0;
+  window.addEventListener('touchend', (e) => {
+    const now = Date.now();
+    if (now - lastTap < 350) e.preventDefault();
+    lastTap = now;
+  }, { passive:false });
+
+  modeBtn.addEventListener('click', () => {
+    state.goal = (state.goal === 'loosen') ? 'tighten' : 'loosen';
+    modeBtn.textContent = `Goal: ${cap(state.goal)}`;
+    goalText.textContent = state.goal.toUpperCase();
+  });
+
+  startBtn.addEventListener('click', start);
+  pushBtn.addEventListener('click', () => answer('push'));
+  pullBtn.addEventListener('click', () => answer('pull'));
+
+  // also allow tapping left/right half as push/pull for one-thumb:
+  // left = PUSH, right = PULL (you can change this mapping later)
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!state.running) return;
+    const isLeft = e.clientX < window.innerWidth / 2;
+    answer(isLeft ? 'push' : 'pull');
+  }, { passive:true });
+
+  function start(){
+    state.running = true;
+    state.score = 0;
+    state.streak = 0;
+    scoreEl.textContent = '0';
+    streakEl.textContent = '0';
+    menu.style.display = 'none';
+    answers.style.display = 'flex';
+    nextQuestion();
+    state.t = performance.now();
+    requestAnimationFrame(loop);
+  }
+
+  function end(){
+    state.running = false;
+    answers.style.display = 'none';
+    menu.style.display = 'flex';
+    if (state.streak > state.best){
+      state.best = state.streak;
+      localStorage.setItem('thread_sense_best', String(state.best));
+      bestEl.textContent = state.best;
+    }
+  }
+
+  function nextQuestion(){
+    // handle angle: avoid too close to straight up/down (hard to feel)
+    // we'll pick from a set of angles that mimic real awkward positions
+    const choices = [
+      deg(25), deg(55), deg(115), deg(155),
+      deg(205), deg(245), deg(305), deg(335)
+    ];
+    state.handleAngle = choices[Math.floor(Math.random() * choices.length)];
+
+    // Mostly RH, sometimes LH for training awareness
+    state.thread = (Math.random() < 0.15) ? 'LH' : 'RH';
+
+    // Compute correct action (push vs pull) for the given goal/thread/handleAngle.
+    // Model:
+    // - Looking at the bolt face-on (screen).
+    // - Positive rotation = CCW, Negative = CW.
+    // - RH thread: Loosen = CCW, Tighten = CW.
+    // - LH thread: Loosen = CW, Tighten = CCW.
+    const desiredRot =
+      (state.thread === 'RH')
+        ? (state.goal === 'loosen' ? +1 : -1)
+        : (state.goal === 'loosen' ? -1 : +1);
+
+    // At handle angle a, the direction you move the handle end to get CCW is the tangential unit vector.
+    // Tangent for CCW at angle a is (-sin a, +cos a). For CW it is (sin a, -cos a).
+    // We'll decide PUSH vs PULL by whether that tangential direction points roughly "away from you" or "toward you"
+    // relative to the handle axis. A practical proxy:
+    // - Consider the handle as a line from bolt to end.
+    // - If the required movement of the handle end has a positive dot with the handle direction,
+    //   that means moving the end "outward/away" along the handle -> feels like PUSH.
+    // - If negative -> feels like PULL.
+    //
+    // This maps the 2D picture to a physical "push/pull" cue consistently.
+    const hx = Math.cos(state.handleAngle), hy = Math.sin(state.handleAngle);
+    const tx = (desiredRot > 0) ? -Math.sin(state.handleAngle) :  Math.sin(state.handleAngle);
+    const ty = (desiredRot > 0) ?  Math.cos(state.handleAngle) : -Math.cos(state.handleAngle);
+    const dot = hx * tx + hy * ty;
+
+    // Note: dot will often be near 0 (pure sideways). Our chosen angles avoid extreme ambiguity.
+    state.correct = (dot >= 0) ? 'push' : 'pull';
+    state.lastResult = null;
+  }
+
+  function answer(choice){
+    if (!state.running) return;
+
+    const ok = (choice === state.correct);
+    state.lastResult = ok;
+
+    if (ok){
+      state.score += 1;
+      state.streak += 1;
+      scoreEl.textContent = String(state.score);
+      streakEl.textContent = String(state.streak);
+      showToast(`✅ Correct: ${choice.toUpperCase()}`, true);
+    } else {
+      showToast(`❌ Wrong. Correct was ${state.correct.toUpperCase()}`, false);
+      // streak reset but keep total score
+      state.streak = 0;
+      streakEl.textContent = '0';
+    }
+
+    // update best streak live
+    if (state.streak > state.best){
+      state.best = state.streak;
+      localStorage.setItem('thread_sense_best', String(state.best));
+      bestEl.textContent = state.best;
+    }
+
+    // next question after short delay
+    setTimeout(() => {
+      if (!state.running) return;
+      nextQuestion();
+    }, 450);
+  }
+
+  let toastTimer = null;
+  function showToast(text, good){
+    toast.textContent = text;
+    toast.classList.add('show');
+    toast.style.borderColor = good ? 'rgba(32,201,151,.35)' : 'rgba(255,77,109,.35)';
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 650);
+  }
+
+  function loop(){
+    if (!state.running) return;
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  function render(){
+    // Background
+    ctx.fillStyle = '#0b1020';
+    ctx.fillRect(0,0,state.w,state.h);
+
+    // subtle vignette
+    radialGradient(state.w*0.5, state.h*0.45, Math.min(state.w,state.h)*0.08, Math.min(state.w,state.h)*0.65,
+      'rgba(45,108,255,.10)', 'rgba(0,0,0,0)'
+    );
+
+    // center bolt location
+    const cx = state.w * 0.5;
+    const cy = state.h * 0.52;
+
+    // instruction text
+    ctx.fillStyle = 'rgba(234,240,255,.92)';
+    ctx.font = `${Math.floor(18*state.dpr)}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const line1 = `GOAL: ${state.goal.toUpperCase()}   •   THREAD: ${state.thread === 'RH' ? 'RIGHT-HAND' : 'LEFT-HAND'}`;
+    const line2 = `Tap PUSH or PULL (from your point of view on the handle).`;
+    ctx.fillText(line1, cx, state.h * 0.16);
+    ctx.globalAlpha = 0.82;
+    ctx.fillText(line2, cx, state.h * 0.20);
+    ctx.globalAlpha = 1;
+
+    // Draw bolt head
+    const boltR = 46 * state.dpr;
+    ctx.fillStyle = 'rgba(255,255,255,.10)';
+    circle(cx, cy, boltR);
+    ctx.fill();
+
+    // inner face
+    ctx.fillStyle = 'rgba(255,255,255,.06)';
+    circle(cx, cy, boltR*0.78);
+    ctx.fill();
+
+    // hex-ish
+    ctx.fillStyle = 'rgba(255,255,255,.10)';
+    hex(cx, cy, boltR*0.48);
+    ctx.fill();
+
+    // draw thread hint arrow (CW/CCW) as small curved arrow near bolt
+    // show desired rotation (not the answer) to help learning
+    const desiredRot =
+      (state.thread === 'RH')
+        ? (state.goal === 'loosen' ? +1 : -1)
+        : (state.goal === 'loosen' ? -1 : +1);
+    drawCurvedArrow(cx, cy, boltR*1.15, desiredRot > 0);
+
+    // Wrench handle
+    const handleLen = 260 * state.dpr;
+    const handleW   = 30  * state.dpr;
+
+    const hx = Math.cos(state.handleAngle);
+    const hy = Math.sin(state.handleAngle);
+    const ex = cx + hx * handleLen;
+    const ey = cy + hy * handleLen;
+
+    // handle body
+    ctx.fillStyle = 'rgba(45,108,255,.95)';
+    roundedCapsule(cx, cy, ex, ey, handleW);
+    ctx.fill();
+
+    // little grip marks
+    ctx.strokeStyle = 'rgba(0,0,0,.22)';
+    ctx.lineWidth = 3 * state.dpr;
+    ctx.globalAlpha = 0.8;
+    for (let i=0.25;i<=0.85;i+=0.12){
+      const gx = cx + hx * handleLen * i;
+      const gy = cy + hy * handleLen * i;
+      const px = -hy, py = hx;
+      ctx.beginPath();
+      ctx.moveTo(gx + px*handleW*0.30, gy + py*handleW*0.30);
+      ctx.lineTo(gx - px*handleW*0.30, gy - py*handleW*0.30);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // "hand" indicator at end of handle
+    ctx.fillStyle = 'rgba(255,255,255,.14)';
+    circle(ex, ey, handleW*0.85);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.26)';
+    circle(ex, ey, handleW*0.40);
+    ctx.fill();
+
+    // label ends
+    ctx.fillStyle = 'rgba(234,240,255,.88)';
+    ctx.font = `${Math.floor(14*state.dpr)}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+    ctx.globalAlpha = 0.85;
+    ctx.fillText('BOLT', cx, cy + boltR*1.7);
+    ctx.fillText('YOU', ex, ey + handleW*1.8);
+    ctx.globalAlpha = 1;
+
+    // If last result wrong, flash red border a moment (optional visual feedback)
+    if (state.lastResult === false){
+      ctx.strokeStyle = 'rgba(255,77,109,.45)';
+      ctx.lineWidth = 10 * state.dpr;
+      ctx.strokeRect(0,0,state.w,state.h);
+    } else if (state.lastResult === true){
+      ctx.strokeStyle = 'rgba(32,201,151,.30)';
+      ctx.lineWidth = 10 * state.dpr;
+      ctx.strokeRect(0,0,state.w,state.h);
+    }
+  }
+
+  // --- draw helpers ---
+  function deg(d){ return d * Math.PI / 180; }
+  function cap(s){ return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  function circle(x,y,r){
+    ctx.beginPath();
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.closePath();
+  }
+  function hex(x,y,r){
+    ctx.beginPath();
+    for (let i=0;i<6;i++){
+      const a = (Math.PI/3)*i + Math.PI/6;
+      const px = x + Math.cos(a)*r;
+      const py = y + Math.sin(a)*r;
+      if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+    }
+    ctx.closePath();
+  }
+  function roundedCapsule(x1,y1,x2,y2,thick){
+    const dx = x2-x1, dy = y2-y1;
+    const len = Math.hypot(dx,dy) || 1;
+    const ux = dx/len, uy = dy/len;
+    const px = -uy, py = ux;
+    const r = thick/2;
+
+    ctx.beginPath();
+    ctx.moveTo(x1 + px*r, y1 + py*r);
+    ctx.lineTo(x2 + px*r, y2 + py*r);
+    ctx.arc(x2, y2, r, Math.atan2(py,px), Math.atan2(-py,-px), false);
+    ctx.lineTo(x1 - px*r, y1 - py*r);
+    ctx.arc(x1, y1, r, Math.atan2(-py,-px), Math.atan2(py,px), false);
+    ctx.closePath();
+  }
+
+  function drawCurvedArrow(cx, cy, radius, ccw){
+    // small arc arrow that shows desired rotation direction (learning aid)
+    const start = deg(-35);
+    const end   = deg(215);
+    ctx.strokeStyle = 'rgba(255,255,255,.24)';
+    ctx.lineWidth = 6 * state.dpr;
+    ctx.lineCap = 'round';
+
+    ctx.beginPath();
+    if (ccw){
+      ctx.arc(cx, cy, radius, start, end, false);
+    } else {
+      ctx.arc(cx, cy, radius, end, start, true);
+    }
+    ctx.stroke();
+
+    // arrow head at end
+    const a = ccw ? end : start;
+    const ax = cx + Math.cos(a) * radius;
+    const ay = cy + Math.sin(a) * radius;
+    const tang = ccw ? (a + Math.PI/2) : (a - Math.PI/2);
+    const tx = Math.cos(tang), ty = Math.sin(tang);
+
+    ctx.fillStyle = 'rgba(255,255,255,.24)';
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax - tx*18*state.dpr + (-ty)*10*state.dpr, ay - ty*18*state.dpr + (tx)*10*state.dpr);
+    ctx.lineTo(ax - tx*18*state.dpr + (ty)*10*state.dpr,  ay - ty*18*state.dpr + (-tx)*10*state.dpr);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function radialGradient(x,y,r0,r1,c0,c1){
+    const g = ctx.createRadialGradient(x,y,r0,x,y,r1);
+    g.addColorStop(0,c0);
+    g.addColorStop(1,c1);
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,state.w,state.h);
+  }
+
+  // Quit gesture: 3-finger tap to stop (handy on phone)
+  window.addEventListener('touchstart', (e) => {
+    if (!state.running) return;
+    if (e.touches && e.touches.length >= 3){
+      end();
+    }
+  }, { passive:true });
+
+})();
+</script>
+</body>
+</html>
